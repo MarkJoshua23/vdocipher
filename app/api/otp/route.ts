@@ -2,8 +2,8 @@ import { NextResponse } from "next/server";
 
 const API_SECRET_KEY = process.env.VDOCIPHER_API_SECRET!;
 const VIDEO_ID = process.env.VDOCIPHER_VIDEO_ID!;
-const WEBAPP_NAME = "Sikatna Systems"; // Define your webapp name
-const XENDIT_API_KEY = process.env.XENDIT_API_KEY!; // Ensure you load your Xendit key
+const XENDIT_API_KEY = process.env.XENDIT_API_KEY!;
+const WEBAPP_NAME = "Sikatna Systems";
 
 export async function POST(request: Request) {
     const { userName, userEmail } = await request.json();
@@ -15,9 +15,26 @@ export async function POST(request: Request) {
         );
     }
 
+    // --- Dynamic Base URL ---
+    const headers = request.headers;
+    // Check for Vercel's URL first, then try constructing from host.
+    // VERCEL_URL doesn't include the protocol.
+    const vercelUrl = "vdocipher-4dyc.vercel.app/";
+    let baseUrl;
+
+    if (vercelUrl) {
+        baseUrl = `https://${vercelUrl}`;
+    } else {
+        // Fallback for local or other deployments
+        const host = headers.get("host")!;
+        const protocol = host.startsWith("localhost") ? "http" : "https";
+        baseUrl = `${protocol}://${host}`;
+    }
+    // --- End Dynamic Base URL ---
+
     const userIpAddress =
-        request.headers.get("x-forwarded-for")?.split(",")[0] ||
-        request.headers.get("remote_addr") ||
+        headers.get("x-forwarded-for")?.split(",")[0] ||
+        headers.get("remote_addr") ||
         "IP N/A";
     const currentDate = new Date().toLocaleDateString();
 
@@ -27,7 +44,7 @@ export async function POST(request: Request) {
             type: "rtext",
             text: userName ? `User: ${userName}` : "Viewer",
             alpha: "0.60",
-            color: "0xFFFFFF", // White
+            color: "0xFFFFFF",
             size: "15",
             interval: "5000",
             skip: "100",
@@ -40,7 +57,7 @@ export async function POST(request: Request) {
             type: "rtext",
             text: `APP: ${WEBAPP_NAME}`,
             alpha: "0.50",
-            color: "0x00FFFF", // Cyan
+            color: "0x00FFFF",
             size: "12",
             interval: "7000",
             skip: "100",
@@ -54,7 +71,7 @@ export async function POST(request: Request) {
             type: "rtext",
             text: `IP: ${userIpAddress} | Date: ${currentDate}`,
             alpha: "0.40",
-            color: "0xFFFF00", // Yellow
+            color: "0xFFFF00",
             size: "10",
             interval: "6000",
             skip: "100",
@@ -68,7 +85,7 @@ export async function POST(request: Request) {
             type: "rtext",
             text: "Unauthorized copying or distribution is strictly prohibited.",
             alpha: "0.30",
-            color: "0xFF0000", // Red for warning
+            color: "0xFF0000",
             size: "10",
             interval: "10000",
             skip: "100",
@@ -80,11 +97,10 @@ export async function POST(request: Request) {
         },
     ];
 
-    // Split userName into first and last names (simple split)
     const nameParts = userName ? userName.split(" ") : ["Valued"];
     const givenName = nameParts[0];
-    const surname = nameParts.length > 1 ? nameParts.slice(1).join(" ") : "Customer";
-
+    const surname =
+        nameParts.length > 1 ? nameParts.slice(1).join(" ") : "Customer";
 
     const xenditRes = await fetch("https://api.xendit.co/v2/invoices", {
         method: "POST",
@@ -94,30 +110,28 @@ export async function POST(request: Request) {
             )}`,
             "Content-Type": "application/json",
         },
-        // --- MODIFIED BODY ---
         body: JSON.stringify({
             external_id: `invoice-${Date.now()}`,
             amount: 1000,
+            payer_email: userEmail,
             description: `Trading Course for ${userName}`,
-            success_redirect_url: `http://localhost:3000/success?userName=${encodeURIComponent(
+            currency: "PHP", // Ensure currency is set
+            // --- Use the dynamic baseUrl ---
+            success_redirect_url: `${baseUrl}/success?userName=${encodeURIComponent(
                 userName
             )}&userEmail=${encodeURIComponent(userEmail)}`,
-            failure_redirect_url: "http://localhost:3000/failure",
-            currency: "PHP", // Set your currency (e.g., PHP, IDR)
-            customer: { // Add the customer object
+            failure_redirect_url: `${baseUrl}/failure`,
+            // --- End dynamic URLs ---
+            customer: {
                 given_names: givenName,
                 surname: surname,
                 email: userEmail,
-                // You can add more customer details if you collect them
             },
-            customer_notification_preference: { // Add notification preferences
-                // invoice_created: ["email"], // Send email when invoice is created
-                invoice_paid: ["email"],    // Send email (receipt) when paid
-                // You can add "whatsapp", "viber", "sms" if configured
+            customer_notification_preference: {
+                invoice_created: ["email"],
+                invoice_paid: ["email"],
             },
-             payer_email: userEmail, // Keep payer_email as well for good measure
         }),
-        // --- END MODIFIED BODY ---
     });
 
     if (!xenditRes.ok) {
@@ -132,8 +146,7 @@ export async function POST(request: Request) {
     const xenditData = await xenditRes.json();
     const paymentLink = xenditData.invoice_url;
 
-    // --- VdoCipher OTP Fetch (remains the same) ---
-    const res = await fetch(
+    const vdoRes = await fetch(
         `https://dev.vdocipher.com/api/videos/${VIDEO_ID}/otp`,
         {
             method: "POST",
@@ -142,21 +155,34 @@ export async function POST(request: Request) {
                 "Content-Type": "application/json",
             },
             body: JSON.stringify({
-                ttl: 300,
+                ttl: 300, // Consider if 300 seconds is enough post-payment
                 annotate: JSON.stringify(annotations),
             }),
         }
     );
 
-    if (!res.ok) {
-        const errorData = await res.text();
+    if (!vdoRes.ok) {
+        const errorData = await vdoRes.text();
         console.error("VdoCipher API Error:", errorData);
+        // Even if VdoCipher fails, we should probably still send the payment link
+        // Or handle this more gracefully. For now, we'll send it but log error.
         return NextResponse.json(
-            { error: "Failed to fetch OTP", details: errorData },
-            { status: res.status }
+            {
+                error: "Fetched payment link, but failed to get OTP",
+                paymentLink,
+            },
+            { status: 500 } // Or a different status
         );
     }
 
-    const data = await res.json();
-    return NextResponse.json({ ...data, paymentLink });
+    const vdoData = await vdoRes.json();
+
+    // IMPORTANT: Your /api/otp route now seems to *always* return both VdoCipher OTP
+    // AND a Xendit payment link. This is confusing. On the success page, you only
+    // need the OTP. On the main page, you only need the payment link.
+    // You should *strongly consider* splitting this into two API routes:
+    // 1. /api/create-payment -> Creates Xendit invoice, returns paymentLink.
+    // 2. /api/get-video-otp -> Called ONLY from success page, returns VdoCipher OTP.
+    // For now, we return both as your previous code did.
+    return NextResponse.json({ ...vdoData, paymentLink });
 }
