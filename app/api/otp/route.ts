@@ -128,7 +128,6 @@ export async function POST(request: Request) {
                 email: userEmail,
             },
             customer_notification_preference: {
-                invoice_created: ["email"],
                 invoice_paid: ["email"],
             },
         }),
